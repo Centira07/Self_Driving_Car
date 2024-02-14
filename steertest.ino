@@ -538,3 +538,18 @@ long getLong(long *var)
   interrupts();
   return gvar;
 }
+void driveCar() {
+}
+
+void turnCar() {
+}
+
+void deadReckoning() {
+}
+
+void carStayStraight() {
+}
+
+void displayGPSInfo() {
+}
+
