@@ -34,6 +34,8 @@
 //    Center   is 502     502
 //    Right MX is 716     720
 */
+
+// Before adding anything new to the car's code. Know that any functions that goes on outside the loop{} needs to be under 2 seconds or it will break the car.
 int nullCounter = 0;
 const int BF_Len = 20;                //Serial3 Buffer Length
 const double driveDist = 1000.;    //Mode 3 drive dist (inches)
@@ -81,7 +83,7 @@ const double steerA = CenterAdc;    //Ladc = steerA - steerB*tan(60)
 const double steerB = (Radc-CenterAdc)/1.7321;
 //const double steerB = 23.094;     //Radc = steerA + steerB*tan(60)
 
-// Gps PVT
+// Gps PVT hex values
 const char UBLOX_INIT[] PROGMEM = {
   // Disable NMEA
   0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x24, // GxGGA off
@@ -109,6 +111,7 @@ const char UBLOX_INIT[] PROGMEM = {
 
 const unsigned char UBX_HEADER[] = { 0xB5, 0x62 };
 
+//structure for Nav_PVT with variables
 struct NAV_PVT {
   unsigned char cls;
   unsigned char id;
@@ -351,7 +354,7 @@ void setup()
   turnAnglePWM = 128;
   Vision::buffIdx = 0;
 
-  // send configuration data in UBX protocol
+  // send configuration data in UBX protocol to the GPS chip
   for(int i = 0; i < sizeof(UBLOX_INIT); i++) {                        
     Serial2.write( pgm_read_byte(UBLOX_INIT+i) );
     delay(5); // simulating a 38400baud pace (or less), otherwise commands are not accepted by the device.
@@ -364,9 +367,9 @@ void loop()
   int ST_PWM, FB_PWM;
 
 
-  int valueA = readChannel(channelNoA, -250, 250, 0);    //turn
-  int valueB = readChannel(channelNoB, -250, 250, -250);    //SWC 3 possition switch
-  int valueC = readChannel(channelNoC, 0, 250, 0);       //speed
+  int valueA = readChannel(channelNoA, -250, 250, 0);    // wheel turn values
+  int valueB = readChannel(channelNoB, -250, 250, -250); // SWC 3 possition switch
+  int valueC = readChannel(channelNoC, 0, 250, 0);       // speed values
   int valueD = readChannel(channelNoD, 0, 250, 0);       //forward=0,backward = 250
   int valueE = readChannel(channelNoE, -250, 250, 0);    //reset counters if == 250
 
@@ -510,7 +513,7 @@ void loop()
       lastPrint = micros() + 500000;
     }
   }
-  else if (valueB > 150)   // MODE 3 Computer control %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  else if (valueB > 150)   // MODE 3 Self Driving %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   {
     pot = 1023 - analogRead(Poten);    //using double gears in ackerman steering
     
@@ -520,20 +523,22 @@ void loop()
     // Define the string to compare against
     String expectedString = "Stop";
     String followString = inputString.substring(0, 2);
-    String expected = "x1";
+    String expected = "x1"; // Start of the string data comimng from the Raspberry Pi for the camera
+    
     // Compare the received string with the expected string
     if (inputString.equals(expectedString)) {
       analogWrite(FB_R_PWM, 0);      //Speed
       analogWrite(FB_L_PWM, 0);
-      lcd.print("2");
     } else if (inputString.equals("null") ) {
       nullCounter = nullCounter + 1;
-      if (nullCounter == 7) {
+      // Makes sure there is a significant number of nulls before the car stops
+      if (nullCounter == 8) {
         analogWrite(FB_R_PWM, 0);      //Speed
         analogWrite(FB_L_PWM, 0);
         nullCounter = 0;
       }
     } else if(inputString.length() == 0) {
+      // Sets everything to 0 when nothing is coming from the serial monitor from the raspberry pi
       analogWrite(FB_R_PWM, 0);      //Speed
       analogWrite(FB_L_PWM, 0);
       if(revTurn == 1)
@@ -581,7 +586,7 @@ void loop()
       {
         desA = steerA + steerB * tan(PI * turnX / 750.); // sets the turning angle of the car
       }
-      analogWrite(FB_R_PWM, 50);      //Speed
+      analogWrite(FB_R_PWM, 50);  // Set speed of car can be from 0 to 250
       analogWrite(FB_L_PWM, 50);
     } else {
       analogWrite(FB_R_PWM, 0);      //Speed
