@@ -13,12 +13,13 @@
 //  Add: drive straight, zero turn angle means drive straight
 //      How much turn for a given interrupt difference
 //  Add: rear wheel speed ratio based on turn angle
-//  Add: dead reconning
+//  Dec 11, 2023: dead reconning
+// .       Serial.print time, Transmitter turn angle, potentiometer, contrL, cntrR
 //  Add: display speed, angle turn, position, battery voltage
 //  Add: Drive straight potentiometer printout
 //  Change: Steering Gain
 //  Add: steering null zone
-//  Add: GPS dead recogning steering
+//  Add: GPS dead rockoning steering
 /*
   Using Arduino FS-I6X
     Channel 1  > 1500 right turn, <1500 left turn
@@ -33,16 +34,18 @@
 //    Center   is 502     502
 //    Right MX is 716     720
 */
-
+int nullCounter = 0;
 const int BF_Len = 20;                //Serial3 Buffer Length
 const double driveDist = 1000.;    //Mode 3 drive dist (inches)
 const double steerKp = 15.;     // turning proportional gain(8 is good value)
-
-/* Added to test constant steering command */
-double constantValueA;
+//MODE 3 drive straight constants
+const double STGain = 50.;
+const long GO = 4000000L, DR = 1000000L;   //4 second acceleration time (mode3)
+const long ST = 4000000L;   //12 seconds full speed, and 4 seconds stop time
 #define Miami
 
 #ifdef Miami
+const int revTurn = 0;    //turn angle reversed from transmitter
 const int Poten = A13;
 const int LIntPin = 0;
 const int RIntPin = 1;
@@ -71,19 +74,151 @@ const int RelayPin2 = A1;
 const int RelayPin1 = A0;
 
 //Steering values
-const int Ladc = 488;       //Left limit
-const int Radc = 539;       //Right limit
-const int CenterAdc = 514;  //Stra8ght value
+const int Ladc = 471;       //Left limit
+const int Radc = 551;       //Right limit
+const int CenterAdc = 511;  //Stra8ght value
 const double steerA = CenterAdc;    //Ladc = steerA - steerB*tan(60)
 const double steerB = (Radc-CenterAdc)/1.7321;
 //const double steerB = 23.094;     //Radc = steerA + steerB*tan(60)
 
+// Gps PVT
+const char UBLOX_INIT[] PROGMEM = {
+  // Disable NMEA
+  0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x24, // GxGGA off
+  0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x01,0x00,0x00,0x00,0x00,0x00,0x01,0x01,0x2B, // GxGLL off
+  0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x02,0x00,0x00,0x00,0x00,0x00,0x01,0x02,0x32, // GxGSA off
+  0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x03,0x00,0x00,0x00,0x00,0x00,0x01,0x03,0x39, // GxGSV off
+  0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x04,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x40, // GxRMC off
+  0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x05,0x00,0x00,0x00,0x00,0x00,0x01,0x05,0x47, // GxVTG off
+
+  // Disable UBX
+  0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x07,0x00,0x00,0x00,0x00,0x00,0x00,0x17,0xDC, //NAV-PVT off
+  0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x12,0xB9, //NAV-POSLLH off
+  0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x13,0xC0, //NAV-STATUS off
+
+  // Enable UBX
+  0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x07,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0xE1, //NAV-PVT on
+  //0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x02,0x00,0x01,0x00,0x00,0x00,0x00,0x13,0xBE, //NAV-POSLLH on
+  //0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x03,0x00,0x01,0x00,0x00,0x00,0x00,0x14,0xC5, //NAV-STATUS on
+
+  // Rate
+  //0xB5,0x62,0x06,0x08,0x06,0x00,0x64,0x00,0x01,0x00,0x01,0x00,0x7A,0x12, //(10Hz)
+  //0xB5,0x62,0x06,0x08,0x06,0x00,0xC8,0x00,0x01,0x00,0x01,0x00,0xDE,0x6A, //(5Hz)
+  0xB5,0x62,0x06,0x08,0x06,0x00,0xE8,0x03,0x01,0x00,0x01,0x00,0x01,0x39, //(1Hz)
+};
+
+const unsigned char UBX_HEADER[] = { 0xB5, 0x62 };
+
+struct NAV_PVT {
+  unsigned char cls;
+  unsigned char id;
+  unsigned short len;
+  unsigned long iTOW;          // GPS time of week of the navigation epoch (ms)
+  
+  unsigned short year;         // Year (UTC) 
+  unsigned char month;         // Month, range 1..12 (UTC)
+  unsigned char day;           // Day of month, range 1..31 (UTC)
+  unsigned char hour;          // Hour of day, range 0..23 (UTC)
+  unsigned char minute;        // Minute of hour, range 0..59 (UTC)
+  unsigned char second;        // Seconds of minute, range 0..60 (UTC)
+  unsigned char valid;                  // Validity Flags (see graphic below)
+  unsigned long tAcc;          // Time accuracy estimate (UTC) (ns)
+  long nano;                   // Fraction of second, range -1e9 .. 1e9 (UTC) (ns)
+  unsigned char fixType;       // GNSSfix Type, range 0..5
+  unsigned char flags;                  // Fix Status Flags
+  unsigned char flags2;     // reserved
+  unsigned char numSV;         // Number of satellites used in Nav Solution
+  
+  long lon;                    // Longitude (deg)
+  long lat;                    // Latitude (deg)
+  long height;                 // Height above Ellipsoid (mm)
+  long hMSL;                   // Height above mean sea level (mm)
+  unsigned long hAcc;          // Horizontal Accuracy Estimate (mm)
+  unsigned long vAcc;          // Vertical Accuracy Estimate (mm)
+  
+  long velN;                   // NED north velocity (mm/s)
+  long velE;                   // NED east velocity (mm/s)
+  long velD;                   // NED down velocity (mm/s)
+  long gSpeed;                 // Ground Speed (2-D) (mm/s)
+  long headMot;                // Heading of motion 2-D (deg)
+  unsigned long sAcc;          // Speed Accuracy Estimate
+  unsigned long headAcc;    // Heading Accuracy Estimate
+  unsigned short pDOP;         // Position dilution of precision
+  short flags3;             // Reserved
+  unsigned long reserved1;     // Reserved
+  // Zack added
+  long headVeh;
+  short magDec;
+  unsigned short magAcc;
+};
+
+NAV_PVT pvt;
+
+void calcChecksum(unsigned char* CK) {
+  memset(CK, 0, 2);
+  for (int i = 0; i < (int)sizeof(NAV_PVT); i++) {
+    CK[0] += ((unsigned char*)(&pvt))[i];
+    CK[1] += CK[0];
+  }
+}
+
+bool processGPS() {
+  static int fpos = 0;
+  static unsigned char checksum[2];
+  const int payloadSize = sizeof(NAV_PVT);
+
+  while ( Serial2.available() ) {
+    byte c = Serial2.read();
+    if ( fpos < 2 ) {
+      if ( c == UBX_HEADER[fpos] )
+        fpos++;
+      else
+        fpos = 0;
+    }
+    else {      
+      if ( (fpos-2) < payloadSize )
+        ((unsigned char*)(&pvt))[fpos-2] = c;
+
+      fpos++;
+
+      if ( fpos == (payloadSize+2) ) {
+        calcChecksum(checksum);
+      }
+      else if ( fpos == (payloadSize+3) ) {
+        if ( c != checksum[0] )
+          fpos = 0;
+      }
+      else if ( fpos == (payloadSize+4) ) {
+        fpos = 0;
+        if ( c == checksum[1] ) {
+          return true;
+        }
+      }
+      else if ( fpos > (payloadSize+4) ) {
+        fpos = 0;
+      }
+    }
+  }
+  return false;
+}
+
+long lat;
+long lng;
+float heading;
+int hour;
+int minute;
+int second;
+
+int X_mid = 320; // Middle of the camera picture where a person is
+
+
 #elif defined Home
+const int revTurn = 0;    //turn angle not reversed from transmitter
 const int Poten = A0;
 const int LIntPin = 0;
 const int RIntPin = 1;
 const int ST_RLPin = 4;    // Steering Right/Left
-const int ST_PWM_Pin = 5;      // Steering PWM
+const int ST_PWM_Pin = 5;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            // Steering PWM
 const int FB_L_Pin = 8;    // Forward/Backward Right Pin
 const int FB_L_PWM = 9;    // Speed Right PWM Pin
 const int FB_R_Pin = 12;   // Forward/Backward Left Pin
@@ -98,11 +233,11 @@ byte channelNoE = 1;    //reset counters if == 250
 // Note IBusBM library labels channels starting with "0"
 
 //Steering values
-const int Ladc = 307;        //Left Limit at home
-const int Radc = 749;        //Right Limit at home
-const int CenterAdc = 503;   //Center at home
-const double steerA = 503.;
-const double steerB = 127.6;
+const int Ladc = 710;        //Left Limit at home
+const int Radc = 287;        //Right Limit at home
+const int CenterAdc = 525;   //Center at home
+const double steerA = CenterAdc;
+const double steerB = (Radc-CenterAdc)/1.7321;     // -124.7
 #endif
 
 namespace Vision
@@ -119,7 +254,6 @@ namespace Vision
 #include <IBusBM.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
-
 
 LiquidCrystal_I2C lcd(0x27, 20, 4); // set the LCD address to 0x27 for a 20 chars and 4 line display
 
@@ -163,18 +297,24 @@ const double distR4 = distL4;
 const double whlBase = 24.375;
 const double cntsPerDegree = whlBase * PI / (1.417176 * 90.); //turn constant
 
+long L_wheel;
+long R_wheel;
+
 
 volatile long cntrL, cntrR, cntrRD;        //Buffer of interrupt times
+long mode3SrtTime;
 const byte BL = 30;
 volatile byte ptrL, ptrR, ptrL0, ptrR0;
 long LIntTm[BL], RIntTm[BL];
 long lpTm, lpTm0, lastPrint, delTL, delTR;
 int driveFlag;        //used in mode 3 for end of run
 int turnAnglePWM;
+int oldValueB;
 
 
 void setup()
 {
+  oldValueB = 0;;
   // Start serial monitor
   Serial.begin(115200);
   Serial3.begin(38400);           // Raspberry Pi
@@ -210,6 +350,12 @@ void setup()
   cntrL = 0;
   turnAnglePWM = 128;
   Vision::buffIdx = 0;
+
+  // send configuration data in UBX protocol
+  for(int i = 0; i < sizeof(UBLOX_INIT); i++) {                        
+    Serial2.write( pgm_read_byte(UBLOX_INIT+i) );
+    delay(5); // simulating a 38400baud pace (or less), otherwise commands are not accepted by the device.
+  }
 }
 // **********************************************************************
 void loop()
@@ -224,6 +370,24 @@ void loop()
   int valueD = readChannel(channelNoD, 0, 250, 0);       //forward=0,backward = 250
   int valueE = readChannel(channelNoE, -250, 250, 0);    //reset counters if == 250
 
+  // save start time of mode 3
+  if(valueB == 250)
+  {
+    if(oldValueB < 250)
+    {
+      mode3SrtTime = micros();    //mode3 start time
+      driveFlag = 1;           //Enable mode 3 driving
+      lastPrint = mode3SrtTime;
+      cntrR = 0;
+      cntrL = 0;
+      sumPot = 0.;
+      cntPot = 0;
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("Mode3 Drive Staight");
+    }
+  }
+  oldValueB = valueB;
   if (valueE > 150)     //reset counters if switch 
   {
     cntrR = 0;
@@ -234,9 +398,6 @@ void loop()
   if (valueB < -150)      //Mode 1 *****************
   {
     digitalWrite(RelayPin8, HIGH);      //Use OEM controller
-    driveFlag = 1;           //Enable mode 3 driving
-
-
       if (micros() > lastPrint)
       {
         lcd.clear();
@@ -245,7 +406,7 @@ void loop()
         lcd.setCursor(0, 1);
         lcd.print("Poten");
         lcd.setCursor(6, 1);
-        lcd.print(analogRead(Poten));
+        lcd.print(1023-analogRead(Poten));
         lcd.setCursor(0,2);
         lcd.print("avePot ");
         lcd.setCursor(7,2);
@@ -258,6 +419,7 @@ void loop()
         lcd.print(" sB=");
         lcd.print(steerB,3);
         
+        
         lastPrint = micros() + 500000;
       }
 
@@ -267,10 +429,17 @@ void loop()
     digitalWrite(RelayPin8, LOW);       //Use Use FlySky controller
   }
 
-  if (valueB == 0)                    //Mode 2, remote control ********
+  if (valueB == 0)        //****************** MODE 2, remote control ********
   {
-    pot = analogRead(Poten);
-    desA = steerA + steerB * tan(PI * valueA / 750.);
+    pot = 1023 - analogRead(Poten);    //using double gears in ackerman steering
+    if(revTurn == 1)
+    {
+       desA = steerA - steerB * tan(PI * valueA / 750.);   //max is pi/3
+    }
+    else
+    {
+      desA = steerA + steerB * tan(PI * valueA / 750.);
+    }
     ST_PWM = floor(steerKp * (desA - pot) + .5);
     if (ST_PWM >= 0)                   // turn right
     {
@@ -278,7 +447,7 @@ void loop()
       {
         ST_PWM = 255;
       }
-      digitalWrite(ST_RLPin, LOW);    // drive steering forward
+      digitalWrite(ST_RLPin, HIGH);    // drive steering forward
       analogWrite(ST_PWM_Pin, ST_PWM);
     }
     else
@@ -287,7 +456,7 @@ void loop()
       {
         ST_PWM = -255;
       }
-      digitalWrite(ST_RLPin, HIGH);   // turn left (drive steering backwards
+      digitalWrite(ST_RLPin, LOW);   // turn left (drive steering backwards
       analogWrite(ST_PWM_Pin, -ST_PWM);
     }
     if (valueD == 0)
@@ -303,7 +472,7 @@ void loop()
     analogWrite(FB_R_PWM, valueC);      //Speed
     analogWrite(FB_L_PWM, valueC);
 
-    sumPot += analogRead(Poten);
+    sumPot += 1023-analogRead(Poten);
     cntPot += 1;
 
     if (micros() > lastPrint)
@@ -314,29 +483,158 @@ void loop()
       lcd.setCursor(0, 1);
       lcd.print("Poten");
       lcd.setCursor(6, 1);
-      lcd.print(analogRead(Poten));
+      lcd.print(1023-analogRead(Poten));
       lcd.setCursor(0,2);
       lcd.print("avePot ");
       lcd.setCursor(7,2);
       lcd.print(sumPot/cntPot);
       lcd.setCursor(14,2);
       lcd.print(cntPot);
+      lcd.setCursor(0,3);         //print left counter
+      lcd.print(cntrL);  
+      lcd.setCursor(10,3);        //print right counter
+      lcd.print(cntrR);
+      
+      Serial.print(valueA);       //print transmitter turn angle
+      Serial.print(" ");
+      Serial.print(1023-analogRead(Poten));
+      Serial.print("  ");
+      Serial.print(cntrL);
+      Serial.print("  ");
+      Serial.print(cntrR);
+      Serial.print(" ");
+      Serial.print(micros());     //time
+      Serial.print(" ");
+      Serial.print(valueC);     //speed
+      Serial.println(" ");
       lastPrint = micros() + 500000;
     }
   }
   else if (valueB > 150)   // MODE 3 Computer control %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   {
+    pot = 1023 - analogRead(Poten);    //using double gears in ackerman steering
+    
+    String inputString = Serial.readStringUntil('\n'); // Read the serial data until newline character
+    inputString.trim(); // Remove any leading/trailing whitespace characters
 
-    pot = analogRead(Poten);
+    // Define the string to compare against
+    String expectedString = "Stop";
+    String followString = inputString.substring(0, 2);
+    String expected = "x1";
+    // Compare the received string with the expected string
+    if (inputString.equals(expectedString)) {
+      analogWrite(FB_R_PWM, 0);      //Speed
+      analogWrite(FB_L_PWM, 0);
+      lcd.print("2");
+    } else if (inputString.equals("null") ) {
+      nullCounter = nullCounter + 1;
+      if (nullCounter == 7) {
+        analogWrite(FB_R_PWM, 0);      //Speed
+        analogWrite(FB_L_PWM, 0);
+        nullCounter = 0;
+      }
+    } else if(inputString.length() == 0) {
+      analogWrite(FB_R_PWM, 0);      //Speed
+      analogWrite(FB_L_PWM, 0);
+      if(revTurn == 1)
+      {
+        desA = steerA - steerB * tan(PI * 0 / 750.);   //max is pi/3
+      }
+      else
+      {
+        desA = steerA + steerB * tan(PI * 0 / 750.);
+      }
+    } else if (followString.equals(expected)) {
+      nullCounter = 0;
+      String values = inputString;
+      // Find the index of the values
+      int x1Index = values.indexOf("x1:") + 3; // Add 3 to skip "x1:"
+      int y1Index = values.indexOf("y1:") + 3; // Add 3 to skip "y1:"
+      int x2Index = values.indexOf("x2:") + 3; // Add 3 to skip "x2:"
+      int y2Index = values.indexOf("y2:") + 3; // Add 3 to skip "y2:"
+      
+      // Extract and convert substrings to integers
+      int x1 = values.substring(x1Index, values.indexOf(",", x1Index)).toInt();
+      int y1 = values.substring(y1Index, values.indexOf(",", y1Index)).toInt();
+      int x2 = values.substring(x2Index, values.indexOf(",", x2Index)).toInt();
+      int y2 = values.substring(y2Index, values.indexOf(",", y2Index)).toInt();
+      int x_d = (x1 + x2) / 2; // center of the person box from the camera
+     
+      if (x_d > 462) {
+        x_d = 462;
+      } else if (x_d < 172) {
+        x_d = 172;
+      }
+      int turnX = map(x_d, 172, 462, -250, 250); // maps points on the camera to the turn values of the car
+      if (turnX > 250) {
+        turnX = 250;
+      } else if (turnX < -250) {
+        turnX = -250;
+      }
+      lcd.setCursor(0,1);
+      lcd.print(x2);
+      if(revTurn == 1)
+      {
+        desA = steerA - steerB * tan(PI * turnX / 750.);   //max is pi/3
+      }
+      else
+      {
+        desA = steerA + steerB * tan(PI * turnX / 750.); // sets the turning angle of the car
+      }
+      analogWrite(FB_R_PWM, 50);      //Speed
+      analogWrite(FB_L_PWM, 50);
+    } else {
+      analogWrite(FB_R_PWM, 0);      //Speed
+      analogWrite(FB_L_PWM, 0);
+      if(revTurn == 1)
+      {
+        desA = steerA - steerB * tan(PI * 0 / 750.);   //max is pi/3
+      }
+      else
+      {
+        desA = steerA + steerB * tan(PI * 0 / 750.);
+      }
+    }
 
+    // Putting gps data into variables
+    lat = pvt.lat;
+    lng = pvt.lon;
+    heading = pvt.headMot/100000.0f;
+    hour = pvt.hour;
+    minute = pvt.minute;
+    second = pvt.second;
+    L_wheel =  getLong(&cntrL);
+    R_wheel = getLong(&cntrR);
 
-    /* This line should be un-commented to run with the controller command */
-    // desA = steerA + steerB * tan(PI * valueA / 750.);
-
-    /* These lines should be un-commented to run with a set command value as defined below. */
-    constantValueA = 250.; /* This value MUST be within range of [-250, 250] */
-    desA = steerA + steerB * tan(PI * constantValueA / 750.);
-
+      /*if (x_d < X_mid) {
+        if(revTurn == 1)
+        {
+          desA = steerA - steerB * tan(PI * 200 / 750.);   //max is pi/3
+        }
+        else
+        {
+          desA = steerA + steerB * tan(PI * 200 / 750.);
+        }
+      } else if (x_d > X_mid) {
+        if(revTurn == 1)
+        {
+          desA = steerA - steerB * tan(PI * -200 / 750.);   //max is pi/3
+        }
+        else
+        {
+          desA = steerA + steerB * tan(PI * -200 / 750.);
+        }
+      } else {
+          if(revTurn == 1)
+          {
+            desA = steerA - steerB * tan(PI * 0 / 750.);   //max is pi/3
+          }
+          else
+          {
+            desA = steerA + steerB * tan(PI * 0 / 750.);
+          }
+      } */
+    
 
     ST_PWM = floor(steerKp * (desA - pot) + .5);
     if (ST_PWM >= 0)                   // turn right
@@ -344,9 +642,8 @@ void loop()
       if (ST_PWM > 255)
       {
         ST_PWM = 255;
-      } 
-
-      digitalWrite(ST_RLPin, LOW );    // drive steering forward
+      }
+      digitalWrite(ST_RLPin, HIGH);    // drive steering forward
       analogWrite(ST_PWM_Pin, ST_PWM);
     }
     else
@@ -355,84 +652,29 @@ void loop()
       {
         ST_PWM = -255;
       }
-      digitalWrite(ST_RLPin, HIGH);   // turn left (drive steering backwards
+      digitalWrite(ST_RLPin, LOW);   // turn left (drive steering backwards
       analogWrite(ST_PWM_Pin, -ST_PWM);
     }
-
     if (valueD == 0)
     {
-        digitalWrite(FB_R_Pin, LOW); /* Drive forward*/
-        digitalWrite(FB_L_Pin, LOW);
+      digitalWrite(FB_R_Pin, LOW);      //Forward
+      digitalWrite(FB_L_Pin, LOW);
     }
     else
     {
-        digitalWrite(FB_R_Pin, HIGH);
-        digitalWrite(FB_L_Pin, HIGH);
+      digitalWrite(FB_R_Pin, HIGH);     //Backward
+      digitalWrite(FB_L_Pin, HIGH);
     }
 
-    analogWrite(FB_R_PWM, valueC);
-    analogWrite(FB_L_PWM, valueC);
 
-    //END of MODE 3 using driveFlag to stop after driveDist  %%%%%%%%%%%%%
+    sumPot += 1023-analogRead(Poten);
+    cntPot += 1;
 
-    if (getLong(&cntrR) + getLong(&cntrL) >= cntrRD)
-    {
-      Serial.print("Turn angle ");
-      Serial.println(analogRead(Poten));
 
-      Serial.print("**** L=");
-      Serial.print(getLong(&cntrL));
-      Serial.print("   R=");
-      Serial.println(getLong(&cntrR));
-      cntrRD = getLong(&cntrR) + getLong(&cntrL) + 10;
-    }
+  } 
+               //END of MODE 3 using driveFlag to stop after driveDist  %%%%%%%%%%%%%
 
-    if (micros() > lastPrint)
-    {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print(getLong(&cntrL));
-      lcd.setCursor(10, 0);
-      lcd.print(getLong(&cntrR));
-      lastPrint = micros() + 500000;
-      lcd.setCursor(0, 1);
-      //    lcd.print(LIntTm[ptrL]);
-      lcd.print((getLong(&cntrR) + getLong(&cntrL))*inchPerCnt / 2.);
-      lcd.setCursor(10, 1);
-      //    lcd.print(RIntTm[ptrR]);
-      lcd.print(driveFlag);
-
-      if ( (ptrL0 = ptrL - 4) < 0 )
-      {
-        ptrL0 += BL;
-      }
-      delTL = LIntTm[ptrL] - LIntTm[ptrL0];
-      if ( (ptrR0 = ptrR - 4) < 0 )
-      {
-        ptrR0 += BL;
-      }
-      delTR = RIntTm[ptrR] - RIntTm[ptrR0];
-
-      lcd.setCursor(0, 2);
-      lcd.print(Vision::isConfident );
-      lcd.setCursor(10, 2);
-      lcd.print(Vision::steeringPWM );
-
-      //      lcd.setCursor(0, 3);
-      //      lcd.print(analogRead(Poten));
-      //      lcd.setCursor(10, 3);
-      //      lcd.print(valueA);
-
-      lcd.setCursor(0, 3);
-      lcd.print(Vision::FBDirection);
-      lcd.setCursor(10, 3);
-      lcd.print(Vision::speedPWM);
-    }
-    else
-    {
-      delay( 10 );
-    }
-  }
+  
 }
 // $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 void leftWhlCnt()
@@ -538,18 +780,5 @@ long getLong(long *var)
   interrupts();
   return gvar;
 }
-void driveCar() {
-}
 
-void turnCar() {
-}
-
-void deadReckoning() {
-}
-
-void carStayStraight() {
-}
-
-void displayGPSInfo() {
-}
 
