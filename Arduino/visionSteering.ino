@@ -34,8 +34,6 @@
 //    Center   is 502     502
 //    Right MX is 716     720
 */
-
-// Before adding anything new to the car's code. Know that any functions that goes on outside the loop{} needs to be under 2 seconds or it will break the car.
 int nullCounter = 0;
 const int BF_Len = 20;                //Serial3 Buffer Length
 const double driveDist = 1000.;    //Mode 3 drive dist (inches)
@@ -83,7 +81,7 @@ const double steerA = CenterAdc;    //Ladc = steerA - steerB*tan(60)
 const double steerB = (Radc-CenterAdc)/1.7321;
 //const double steerB = 23.094;     //Radc = steerA + steerB*tan(60)
 
-// Gps PVT hex values
+// Gps PVT
 const char UBLOX_INIT[] PROGMEM = {
   // Disable NMEA
   0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x24, // GxGGA off
@@ -99,7 +97,7 @@ const char UBLOX_INIT[] PROGMEM = {
   0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x13,0xC0, //NAV-STATUS off
 
   // Enable UBX
-  0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x07,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0xE1, //NAV-PVT on
+  /xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x07,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0xE1, //NAV-PVT on
   //0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x02,0x00,0x01,0x00,0x00,0x00,0x00,0x13,0xBE, //NAV-POSLLH on
   //0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x03,0x00,0x01,0x00,0x00,0x00,0x00,0x14,0xC5, //NAV-STATUS on
 
@@ -111,7 +109,6 @@ const char UBLOX_INIT[] PROGMEM = {
 
 const unsigned char UBX_HEADER[] = { 0xB5, 0x62 };
 
-//structure for Nav_PVT with variables
 struct NAV_PVT {
   unsigned char cls;
   unsigned char id;
@@ -354,7 +351,7 @@ void setup()
   turnAnglePWM = 128;
   Vision::buffIdx = 0;
 
-  // send configuration data in UBX protocol to the GPS chip
+  // send configuration data in UBX protocol
   for(int i = 0; i < sizeof(UBLOX_INIT); i++) {                        
     Serial2.write( pgm_read_byte(UBLOX_INIT+i) );
     delay(5); // simulating a 38400baud pace (or less), otherwise commands are not accepted by the device.
@@ -367,9 +364,9 @@ void loop()
   int ST_PWM, FB_PWM;
 
 
-  int valueA = readChannel(channelNoA, -250, 250, 0);    // wheel turn values
-  int valueB = readChannel(channelNoB, -250, 250, -250); // SWC 3 possition switch
-  int valueC = readChannel(channelNoC, 0, 250, 0);       // speed values
+  int valueA = readChannel(channelNoA, -250, 250, 0);    //turn
+  int valueB = readChannel(channelNoB, -250, 250, -250);    //SWC 3 possition switch
+  int valueC = readChannel(channelNoC, 0, 250, 0);       //speed
   int valueD = readChannel(channelNoD, 0, 250, 0);       //forward=0,backward = 250
   int valueE = readChannel(channelNoE, -250, 250, 0);    //reset counters if == 250
 
@@ -513,7 +510,7 @@ void loop()
       lastPrint = micros() + 500000;
     }
   }
-  else if (valueB > 150)   // MODE 3 Self Driving %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  else if (valueB > 150)   // MODE 3 Computer control %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   {
     pot = 1023 - analogRead(Poten);    //using double gears in ackerman steering
     
@@ -523,22 +520,20 @@ void loop()
     // Define the string to compare against
     String expectedString = "Stop";
     String followString = inputString.substring(0, 2);
-    String expected = "x1"; // Start of the string data comimng from the Raspberry Pi for the camera
-    
+    String expected = "x1";
     // Compare the received string with the expected string
     if (inputString.equals(expectedString)) {
       analogWrite(FB_R_PWM, 0);      //Speed
       analogWrite(FB_L_PWM, 0);
+      lcd.print("2");
     } else if (inputString.equals("null") ) {
       nullCounter = nullCounter + 1;
-      // Makes sure there is a significant number of nulls before the car stops
-      if (nullCounter == 8) {
+      if (nullCounter == 7) {
         analogWrite(FB_R_PWM, 0);      //Speed
         analogWrite(FB_L_PWM, 0);
         nullCounter = 0;
       }
     } else if(inputString.length() == 0) {
-      // Sets everything to 0 when nothing is coming from the serial monitor from the raspberry pi
       analogWrite(FB_R_PWM, 0);      //Speed
       analogWrite(FB_L_PWM, 0);
       if(revTurn == 1)
@@ -557,20 +552,30 @@ void loop()
       int y1Index = values.indexOf("y1:") + 3; // Add 3 to skip "y1:"
       int x2Index = values.indexOf("x2:") + 3; // Add 3 to skip "x2:"
       int y2Index = values.indexOf("y2:") + 3; // Add 3 to skip "y2:"
+      int distIndex = values.indexOf("Distance:") + 10; // Add 10 to skip "Distance:"
       
       // Extract and convert substrings to integers
       int x1 = values.substring(x1Index, values.indexOf(",", x1Index)).toInt();
       int y1 = values.substring(y1Index, values.indexOf(",", y1Index)).toInt();
       int x2 = values.substring(x2Index, values.indexOf(",", x2Index)).toInt();
       int y2 = values.substring(y2Index, values.indexOf(",", y2Index)).toInt();
-      int x_d = (x1 + x2) / 2; // center of the person box from the camera
-     
+      float distance = values.substring(distIndex, values.indexOf(" ft", distIndex)).toFloat();
+      if (distance < 10) {
+        distance = 10;
+      } else if (distance > 20) {
+        distance = 20;
+      }
+      float speedX = map(distance, 10, 20, 50, 250);
+      int x_d = (x1 + x2) / 2;
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print(x1);
       if (x_d > 462) {
         x_d = 462;
       } else if (x_d < 172) {
         x_d = 172;
       }
-      int turnX = map(x_d, 172, 462, -250, 250); // maps points on the camera to the turn values of the car
+      int turnX = map(x_d, 172, 462, -250, 250);
       if (turnX > 250) {
         turnX = 250;
       } else if (turnX < -250) {
@@ -584,10 +589,10 @@ void loop()
       }
       else
       {
-        desA = steerA + steerB * tan(PI * turnX / 750.); // sets the turning angle of the car
+        desA = steerA + steerB * tan(PI * turnX / 750.);
       }
-      analogWrite(FB_R_PWM, 50);  // Set speed of car can be from 0 to 250
-      analogWrite(FB_L_PWM, 50);
+      analogWrite(FB_R_PWM, speedX);      //Speed
+      analogWrite(FB_L_PWM, speedX);
     } else {
       analogWrite(FB_R_PWM, 0);      //Speed
       analogWrite(FB_L_PWM, 0);
@@ -600,8 +605,6 @@ void loop()
         desA = steerA + steerB * tan(PI * 0 / 750.);
       }
     }
-
-    // Putting gps data into variables
     lat = pvt.lat;
     lng = pvt.lon;
     heading = pvt.headMot/100000.0f;
@@ -611,35 +614,6 @@ void loop()
     L_wheel =  getLong(&cntrL);
     R_wheel = getLong(&cntrR);
 
-      /*if (x_d < X_mid) {
-        if(revTurn == 1)
-        {
-          desA = steerA - steerB * tan(PI * 200 / 750.);   //max is pi/3
-        }
-        else
-        {
-          desA = steerA + steerB * tan(PI * 200 / 750.);
-        }
-      } else if (x_d > X_mid) {
-        if(revTurn == 1)
-        {
-          desA = steerA - steerB * tan(PI * -200 / 750.);   //max is pi/3
-        }
-        else
-        {
-          desA = steerA + steerB * tan(PI * -200 / 750.);
-        }
-      } else {
-          if(revTurn == 1)
-          {
-            desA = steerA - steerB * tan(PI * 0 / 750.);   //max is pi/3
-          }
-          else
-          {
-            desA = steerA + steerB * tan(PI * 0 / 750.);
-          }
-      } */
-    
 
     ST_PWM = floor(steerKp * (desA - pot) + .5);
     if (ST_PWM >= 0)                   // turn right
@@ -785,4 +759,3 @@ long getLong(long *var)
   interrupts();
   return gvar;
 }
-
