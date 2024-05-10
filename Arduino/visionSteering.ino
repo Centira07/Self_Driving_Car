@@ -97,7 +97,7 @@ const char UBLOX_INIT[] PROGMEM = {
   0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x13,0xC0, //NAV-STATUS off
 
   // Enable UBX
-  /xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x07,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0xE1, //NAV-PVT on
+  0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x07,0x00,0x01,0x00,0x00,0x00,0x00,0x18,0xE1, //NAV-PVT on
   //0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x02,0x00,0x01,0x00,0x00,0x00,0x00,0x13,0xBE, //NAV-POSLLH on
   //0xB5,0x62,0x06,0x01,0x08,0x00,0x01,0x03,0x00,0x01,0x00,0x00,0x00,0x00,0x14,0xC5, //NAV-STATUS on
 
@@ -514,7 +514,7 @@ void loop()
   {
     pot = 1023 - analogRead(Poten);    //using double gears in ackerman steering
     
-    String inputString = Serial.readStringUntil('\n'); // Read the serial data until newline character
+    String inputString = Serial.readStringUntil('\n'); // Read the serial data at every new line
     inputString.trim(); // Remove any leading/trailing whitespace characters
 
     // Define the string to compare against
@@ -525,13 +525,11 @@ void loop()
     if (inputString.equals(expectedString)) {
       analogWrite(FB_R_PWM, 0);      //Speed
       analogWrite(FB_L_PWM, 0);
-      lcd.print("2");
     } else if (inputString.equals("null") ) {
       nullCounter = nullCounter + 1;
-      if (nullCounter == 7) {
+      if (nullCounter >= 7) {
         analogWrite(FB_R_PWM, 0);      //Speed
         analogWrite(FB_L_PWM, 0);
-        nullCounter = 0;
       }
     } else if(inputString.length() == 0) {
       analogWrite(FB_R_PWM, 0);      //Speed
@@ -565,7 +563,7 @@ void loop()
       } else if (distance > 20) {
         distance = 20;
       }
-      float speedX = map(distance, 10, 20, 50, 250);
+      float speedX = map(distance, 10, 20, 50, 180);
       int x_d = (x1 + x2) / 2;
       lcd.clear();
       lcd.setCursor(0,0);
@@ -593,17 +591,6 @@ void loop()
       }
       analogWrite(FB_R_PWM, speedX);      //Speed
       analogWrite(FB_L_PWM, speedX);
-    } else {
-      analogWrite(FB_R_PWM, 0);      //Speed
-      analogWrite(FB_L_PWM, 0);
-      if(revTurn == 1)
-      {
-        desA = steerA - steerB * tan(PI * 0 / 750.);   //max is pi/3
-      }
-      else
-      {
-        desA = steerA + steerB * tan(PI * 0 / 750.);
-      }
     }
     lat = pvt.lat;
     lng = pvt.lon;
